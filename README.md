@@ -15,17 +15,9 @@ School App adalah aplikasi web untuk mengelola data Siswa, Kelas, dan Guru. Apli
 - **Halaman Gabungan:** Menampilkan daftar lengkap Siswa, Kelas, dan Guru  
 - **Navigasi:** Navbar responsif dengan Tailwind CSS yang muncul di semua halaman
 
-## Prasyarat
-
-- [Node.js](https://nodejs.org/) (versi terbaru)
-- npm (termasuk dalam instalasi Node.js)
-- Git
-- (Opsional) MongoDB jika ingin mengintegrasikan database; saat ini aplikasi menggunakan data in-memory
-
 ## Instalasi & Penggunaan
 
 ### 1. Clone Repository
-
 ```bash
 git clone https://github.com/username/school-app.git
 cd manage-school-app
