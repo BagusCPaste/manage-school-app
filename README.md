@@ -4,7 +4,7 @@ School App adalah aplikasi web untuk mengelola data Siswa, Kelas, dan Guru. Apli
 
 - **Frontend:** Next.js 15.2+ (menggunakan struktur folder **app**, TypeScript, dan Tailwind CSS)
 - **Backend:** Node.js dengan Express
-- **Database:** Saat ini menggunakan data in-memory (akan dikonfigurasi ke MongoDB nantinya)
+- **Database:** Free Database Easy to Use ( menggunakan database PostgreSQL Online)
 
 ## Fitur
 
