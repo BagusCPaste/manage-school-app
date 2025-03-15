@@ -29,10 +29,11 @@ School App adalah aplikasi web untuk mengelola data Siswa, Kelas, dan Guru. Apli
 ```bash
 git clone https://github.com/username/school-app.git
 cd manage-school-app
-
+```
 ## 2. Setup Backend
 Masuk ke folder backend dan instal dependensi:
 
 ``bash
 cd backend
 npm install
+````

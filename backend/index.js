@@ -1,7 +1,7 @@
 // backend/index.js
 const express = require("express");
 const cors = require("cors");
-const mongoose = require("mongoose");
+const { Pool } = require("pg");
 require("dotenv").config();
 
 const app = express();
@@ -11,103 +11,59 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Koneksi ke MongoDB
-mongoose.connect("mongodb://localhost:27017/schoolapp", {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
+// Konfigurasi koneksi ke Neon PostgreSQL
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }, // Diperlukan untuk Neon
 });
-const db = mongoose.connection;
-db.on("error", console.error.bind(console, "connection error:"));
-db.once("open", () => {
-  console.log("Connected to MongoDB");
-});
-
-// Skema dan Model
-
-// Skema User (untuk autentikasi dan role)
-const userSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  role: { type: String, required: true, enum: ["siswa", "guru"] }, // Role hanya boleh "siswa" atau "guru"
-});
-const User = mongoose.model("User", userSchema);
-
-// Skema Siswa
-const siswaSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  kelasId: { type: Number, required: true },
-  kelasName: { type: String, required: true },
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Referensi ke user (opsional)
-});
-const Siswa = mongoose.model("Siswa", siswaSchema);
-
-// Skema Kelas
-const kelasSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-});
-const Kelas = mongoose.model("Kelas", kelasSchema);
-
-// Skema Guru
-const guruSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  kelasId: { type: Number, required: true },
-  kelasName: { type: String, required: true },
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // Referensi ke user (opsional)
-});
-const Guru = mongoose.model("Guru", guruSchema);
 
 // --- Route Root ---
 app.get("/", (req, res) => {
-  res.send("Backend server is running.");
+  res.send("Backend server is running with Neon PostgreSQL.");
 });
 
 // --- Fitur Autentikasi ---
 
-// Register: Tambah pengguna baru dengan role
-app.post("/api/register", async (req, res) => {
-  const { username, password, role } = req.body;
-
-  // Validasi input
-  if (!username || !password || !role) {
-    return res
-      .status(400)
-      .json({ message: "Username, password, dan role wajib diisi." });
-  }
-  if (role !== "siswa" && role !== "guru") {
-    return res
-      .status(400)
-      .json({
-        message:
-          "Role tidak valid. Hanya 'siswa' atau 'guru' yang diperbolehkan.",
-      });
-  }
-
+app.post("/api/login", async (req, res) => {
+  const { username, password } = req.body;
   try {
-    // Cek apakah username sudah ada
-    const existingUser = await User.findOne({ username });
-    if (existingUser) {
-      return res.status(400).json({ message: "Username sudah terdaftar." });
+    const user = await pool.query(
+      "SELECT * FROM users WHERE username = $1 AND password = $2",
+      [username, password]
+    );
+    if (user.rows.length > 0) {
+      const token = "user_" + user.rows[0].id + "_token"; // Token sederhana
+      return res.status(200).json({ token, user: user.rows[0] });
     }
-
-    // Simpan pengguna baru ke database
-    const newUser = new User({ username, password, role });
-    await newUser.save();
-    res.status(201).json({ message: "Register berhasil", user: newUser });
+    res.status(401).json({ message: "Invalid credentials" });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Terjadi error pada server." });
   }
 });
 
-// Login
-app.post("/api/login", async (req, res) => {
-  const { username, password } = req.body;
+app.post("/api/register", async (req, res) => {
+  const { username, password, role } = req.body;
+
+  if (!username || !password || !role) {
+    return res.status(400).json({ message: "Username, password, dan role wajib diisi." });
+  }
+  if (role !== "siswa" && role !== "guru") {
+    return res.status(400).json({ message: "Role tidak valid. Hanya 'siswa' atau 'guru' yang diperbolehkan." });
+  }
+
   try {
-    const user = await User.findOne({ username, password });
-    if (user) {
-      return res.status(200).json({ token: "123456", user });
+    const checkUser = await pool.query("SELECT * FROM users WHERE username = $1", [username]);
+    if (checkUser.rows.length > 0) {
+      return res.status(400).json({ message: "Username sudah terdaftar." });
     }
-    res.status(401).json({ message: "Invalid credentials" });
+
+    const newUser = await pool.query(
+      "INSERT INTO users (username, password, role) VALUES ($1, $2, $3) RETURNING *",
+      [username, password, role]
+    );
+    const token = "user_" + newUser.rows[0].id + "_token"; // Token sederhana
+    res.status(201).json({ message: "Register berhasil", user: newUser.rows[0], token });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Terjadi error pada server." });
@@ -125,16 +81,17 @@ app.post("/api/logout", (req, res) => {
 app.get("/api/siswa", async (req, res) => {
   const kelas = req.query.kelas;
   try {
-    let siswas = await Siswa.find();
-    const result = siswas.map((s) => ({
-      id: s._id,
+    let query = "SELECT * FROM siswas";
+    const result = await pool.query(query);
+    let siswas = result.rows.map((s) => ({
+      id: s.id,
       name: s.name,
-      kelas: s.kelasName,
+      kelas: s.kelas_name,
     }));
     if (kelas) {
-      return res.status(200).json(result.filter((s) => s.kelas === kelas));
+      siswas = siswas.filter((s) => s.kelas === kelas);
     }
-    res.status(200).json(result);
+    res.status(200).json(siswas);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Terjadi error pada server." });
@@ -144,12 +101,16 @@ app.get("/api/siswa", async (req, res) => {
 // GET detail siswa berdasarkan id
 app.get("/api/siswa/:id", async (req, res) => {
   try {
-    const siswa = await Siswa.findById(req.params.id);
-    if (!siswa) return res.status(404).json({ message: "Siswa not found" });
+    const result = await pool.query("SELECT * FROM siswas WHERE id = $1", [
+      req.params.id,
+    ]);
+    if (result.rows.length === 0)
+      return res.status(404).json({ message: "Siswa not found" });
+    const siswa = result.rows[0];
     res.status(200).json({
-      id: siswa._id,
+      id: siswa.id,
       name: siswa.name,
-      kelas: siswa.kelasName,
+      kelas: siswa.kelas_name,
     });
   } catch (error) {
     console.error(error);
@@ -161,20 +122,21 @@ app.get("/api/siswa/:id", async (req, res) => {
 app.post("/api/siswa", async (req, res) => {
   const { name, kelas } = req.body;
   try {
-    const kelasData = await Kelas.findOne({ name: kelas });
-    if (!kelasData)
+    const kelasCheck = await pool.query(
+      "SELECT id, name FROM kelases WHERE name = $1",
+      [kelas]
+    );
+    if (kelasCheck.rows.length === 0)
       return res.status(400).json({ message: "Kelas tidak ditemukan" });
 
-    const newSiswa = new Siswa({
-      name,
-      kelasId: kelasData._id,
-      kelasName: kelasData.name,
-    });
-    await newSiswa.save();
+    const newSiswa = await pool.query(
+      "INSERT INTO siswas (name, kelas_id, kelas_name) VALUES ($1, $2, $3) RETURNING *",
+      [name, kelasCheck.rows[0].id, kelasCheck.rows[0].name]
+    );
     res.status(201).json({
-      id: newSiswa._id,
-      name: newSiswa.name,
-      kelas: newSiswa.kelasName,
+      id: newSiswa.rows[0].id,
+      name: newSiswa.rows[0].name,
+      kelas: newSiswa.rows[0].kelas_name,
     });
   } catch (error) {
     console.error(error);
@@ -185,24 +147,36 @@ app.post("/api/siswa", async (req, res) => {
 // UPDATE: Ubah data siswa
 app.put("/api/siswa/:id", async (req, res) => {
   try {
-    const siswa = await Siswa.findById(req.params.id);
-    if (!siswa) return res.status(404).json({ message: "Siswa not found" });
+    const siswa = await pool.query("SELECT * FROM siswas WHERE id = $1", [
+      req.params.id,
+    ]);
+    if (siswa.rows.length === 0)
+      return res.status(404).json({ message: "Siswa not found" });
 
     const { name, kelas } = req.body;
-    if (kelas) {
-      const kelasData = await Kelas.findOne({ name: kelas });
-      if (!kelasData)
-        return res.status(400).json({ message: "Kelas tidak ditemukan" });
-      siswa.kelasId = kelasData._id;
-      siswa.kelasName = kelasData.name;
-    }
-    if (name) siswa.name = name;
+    let kelasId = siswa.rows[0].kelas_id;
+    let kelasName = siswa.rows[0].kelas_name;
 
-    await siswa.save();
+    if (kelas) {
+      const kelasData = await pool.query(
+        "SELECT id, name FROM kelases WHERE name = $1",
+        [kelas]
+      );
+      if (kelasData.rows.length === 0)
+        return res.status(400).json({ message: "Kelas tidak ditemukan" });
+      kelasId = kelasData.rows[0].id;
+      kelasName = kelasData.rows[0].name;
+    }
+
+    await pool.query(
+      "UPDATE siswas SET name = $1, kelas_id = $2, kelas_name = $3 WHERE id = $4",
+      [name || siswa.rows[0].name, kelasId, kelasName, req.params.id]
+    );
+
     res.status(200).json({
-      id: siswa._id,
-      name: siswa.name,
-      kelas: siswa.kelasName,
+      id: req.params.id,
+      name: name || siswa.rows[0].name,
+      kelas: kelasName,
     });
   } catch (error) {
     console.error(error);
@@ -213,8 +187,12 @@ app.put("/api/siswa/:id", async (req, res) => {
 // DELETE: Hapus siswa
 app.delete("/api/siswa/:id", async (req, res) => {
   try {
-    const siswa = await Siswa.findByIdAndDelete(req.params.id);
-    if (!siswa) return res.status(404).json({ message: "Siswa not found" });
+    const result = await pool.query(
+      "DELETE FROM siswas WHERE id = $1 RETURNING *",
+      [req.params.id]
+    );
+    if (result.rows.length === 0)
+      return res.status(404).json({ message: "Siswa not found" });
     res.status(200).json({ message: "Siswa deleted" });
   } catch (error) {
     console.error(error);
@@ -227,8 +205,8 @@ app.delete("/api/siswa/:id", async (req, res) => {
 // GET semua kelas
 app.get("/api/kelas", async (req, res) => {
   try {
-    const kelases = await Kelas.find();
-    res.status(200).json(kelases);
+    const result = await pool.query("SELECT * FROM kelases");
+    res.status(200).json(result.rows);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Terjadi error pada server." });
@@ -237,10 +215,13 @@ app.get("/api/kelas", async (req, res) => {
 
 // CREATE: Tambah kelas baru
 app.post("/api/kelas", async (req, res) => {
+  const { name } = req.body;
   try {
-    const newKelas = new Kelas(req.body);
-    await newKelas.save();
-    res.status(201).json(newKelas);
+    const newKelas = await pool.query(
+      "INSERT INTO kelases (name) VALUES ($1) RETURNING *",
+      [name]
+    );
+    res.status(201).json(newKelas.rows[0]);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Terjadi error pada server." });
@@ -250,18 +231,29 @@ app.post("/api/kelas", async (req, res) => {
 // UPDATE: Ubah data kelas
 app.put("/api/kelas/:id", async (req, res) => {
   try {
-    const kelas = await Kelas.findById(req.params.id);
-    if (!kelas) return res.status(404).json({ message: "Kelas not found" });
+    const kelas = await pool.query("SELECT * FROM kelases WHERE id = $1", [
+      req.params.id,
+    ]);
+    if (kelas.rows.length === 0)
+      return res.status(404).json({ message: "Kelas not found" });
 
-    const newName = req.body.name;
-    Object.assign(kelas, req.body);
-    await kelas.save();
+    const { name } = req.body;
+    await pool.query("UPDATE kelases SET name = $1 WHERE id = $2", [
+      name,
+      req.params.id,
+    ]);
 
     // Update semua siswa dan guru yang terkait
-    await Siswa.updateMany({ kelasId: kelas._id }, { kelasName: newName });
-    await Guru.updateMany({ kelasId: kelas._id }, { kelasName: newName });
+    await pool.query("UPDATE siswas SET kelas_name = $1 WHERE kelas_id = $2", [
+      name,
+      req.params.id,
+    ]);
+    await pool.query("UPDATE gurus SET kelas_name = $1 WHERE kelas_id = $2", [
+      name,
+      req.params.id,
+    ]);
 
-    res.status(200).json(kelas);
+    res.status(200).json({ id: req.params.id, name });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Terjadi error pada server." });
@@ -272,16 +264,22 @@ app.put("/api/kelas/:id", async (req, res) => {
 app.delete("/api/kelas/:id", async (req, res) => {
   try {
     const kelasId = req.params.id;
-    const usedBySiswa = await Siswa.findOne({ kelasId });
-    const usedByGuru = await Guru.findOne({ kelasId });
-    if (usedBySiswa || usedByGuru) {
+    const usedBySiswa = await pool.query(
+      "SELECT 1 FROM siswas WHERE kelas_id = $1 LIMIT 1",
+      [kelasId]
+    );
+    const usedByGuru = await pool.query(
+      "SELECT 1 FROM gurus WHERE kelas_id = $1 LIMIT 1",
+      [kelasId]
+    );
+    if (usedBySiswa.rows.length > 0 || usedByGuru.rows.length > 0) {
       return res.status(400).json({
         message:
           "Kelas tidak dapat dihapus karena sedang digunakan oleh siswa atau guru",
       });
     }
 
-    await Kelas.findByIdAndDelete(kelasId);
+    await pool.query("DELETE FROM kelases WHERE id = $1", [kelasId]);
     res.status(200).json({ message: "Kelas deleted" });
   } catch (error) {
     console.error(error);
@@ -295,16 +293,17 @@ app.delete("/api/kelas/:id", async (req, res) => {
 app.get("/api/guru", async (req, res) => {
   const kelas = req.query.kelas;
   try {
-    let gurus = await Guru.find();
-    const result = gurus.map((g) => ({
-      id: g._id,
+    let query = "SELECT * FROM gurus";
+    const result = await pool.query(query);
+    let gurus = result.rows.map((g) => ({
+      id: g.id,
       name: g.name,
-      kelas: g.kelasName,
+      kelas: g.kelas_name,
     }));
     if (kelas) {
-      return res.status(200).json(result.filter((g) => g.kelas === kelas));
+      gurus = gurus.filter((g) => g.kelas === kelas);
     }
-    res.status(200).json(result);
+    res.status(200).json(gurus);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Terjadi error pada server." });
@@ -315,20 +314,21 @@ app.get("/api/guru", async (req, res) => {
 app.post("/api/guru", async (req, res) => {
   const { name, kelas } = req.body;
   try {
-    const kelasData = await Kelas.findOne({ name: kelas });
-    if (!kelasData)
+    const kelasCheck = await pool.query(
+      "SELECT id, name FROM kelases WHERE name = $1",
+      [kelas]
+    );
+    if (kelasCheck.rows.length === 0)
       return res.status(400).json({ message: "Kelas tidak ditemukan" });
 
-    const newGuru = new Guru({
-      name,
-      kelasId: kelasData._id,
-      kelasName: kelasData.name,
-    });
-    await newGuru.save();
+    const newGuru = await pool.query(
+      "INSERT INTO gurus (name, kelas_id, kelas_name) VALUES ($1, $2, $3) RETURNING *",
+      [name, kelasCheck.rows[0].id, kelasCheck.rows[0].name]
+    );
     res.status(201).json({
-      id: newGuru._id,
-      name: newGuru.name,
-      kelas: newGuru.kelasName,
+      id: newGuru.rows[0].id,
+      name: newGuru.rows[0].name,
+      kelas: newGuru.rows[0].kelas_name,
     });
   } catch (error) {
     console.error(error);
@@ -339,24 +339,36 @@ app.post("/api/guru", async (req, res) => {
 // UPDATE: Ubah data guru
 app.put("/api/guru/:id", async (req, res) => {
   try {
-    const guru = await Guru.findById(req.params.id);
-    if (!guru) return res.status(404).json({ message: "Guru not found" });
+    const guru = await pool.query("SELECT * FROM gurus WHERE id = $1", [
+      req.params.id,
+    ]);
+    if (guru.rows.length === 0)
+      return res.status(404).json({ message: "Guru not found" });
 
     const { name, kelas } = req.body;
-    if (kelas) {
-      const kelasData = await Kelas.findOne({ name: kelas });
-      if (!kelasData)
-        return res.status(400).json({ message: "Kelas tidak ditemukan" });
-      guru.kelasId = kelasData._id;
-      guru.kelasName = kelasData.name;
-    }
-    if (name) guru.name = name;
+    let kelasId = guru.rows[0].kelas_id;
+    let kelasName = guru.rows[0].kelas_name;
 
-    await guru.save();
+    if (kelas) {
+      const kelasData = await pool.query(
+        "SELECT id, name FROM kelases WHERE name = $1",
+        [kelas]
+      );
+      if (kelasData.rows.length === 0)
+        return res.status(400).json({ message: "Kelas tidak ditemukan" });
+      kelasId = kelasData.rows[0].id;
+      kelasName = kelasData.rows[0].name;
+    }
+
+    await pool.query(
+      "UPDATE gurus SET name = $1, kelas_id = $2, kelas_name = $3 WHERE id = $4",
+      [name || guru.rows[0].name, kelasId, kelasName, req.params.id]
+    );
+
     res.status(200).json({
-      id: guru._id,
-      name: guru.name,
-      kelas: guru.kelasName,
+      id: req.params.id,
+      name: name || guru.rows[0].name,
+      kelas: kelasName,
     });
   } catch (error) {
     console.error(error);
@@ -367,8 +379,12 @@ app.put("/api/guru/:id", async (req, res) => {
 // DELETE: Hapus guru
 app.delete("/api/guru/:id", async (req, res) => {
   try {
-    const guru = await Guru.findByIdAndDelete(req.params.id);
-    if (!guru) return res.status(404).json({ message: "Guru not found" });
+    const result = await pool.query(
+      "DELETE FROM gurus WHERE id = $1 RETURNING *",
+      [req.params.id]
+    );
+    if (result.rows.length === 0)
+      return res.status(404).json({ message: "Guru not found" });
     res.status(200).json({ message: "Guru deleted" });
   } catch (error) {
     console.error(error);
@@ -379,22 +395,26 @@ app.delete("/api/guru/:id", async (req, res) => {
 // --- Endpoint Gabungan: List Siswa, Kelas, dan Guru ---
 app.get("/api/list", async (req, res) => {
   try {
-    const siswas = await Siswa.find();
-    const kelases = await Kelas.find();
-    const gurus = await Guru.find();
-    const formattedSiswas = siswas.map((s) => ({
-      id: s._id,
+    const [siswasResult, kelasesResult, gurusResult] = await Promise.all([
+      pool.query("SELECT * FROM siswas"),
+      pool.query("SELECT * FROM kelases"),
+      pool.query("SELECT * FROM gurus"),
+    ]);
+
+    const formattedSiswas = siswasResult.rows.map((s) => ({
+      id: s.id,
       name: s.name,
-      kelas: s.kelasName,
+      kelas: s.kelas_name,
     }));
-    const formattedGurus = gurus.map((g) => ({
-      id: g._id,
+    const formattedGurus = gurusResult.rows.map((g) => ({
+      id: g.id,
       name: g.name,
-      kelas: g.kelasName,
+      kelas: g.kelas_name,
     }));
+
     res.status(200).json({
       siswas: formattedSiswas,
-      kelases,
+      kelases: kelasesResult.rows,
       gurus: formattedGurus,
     });
   } catch (error) {
@@ -406,13 +426,16 @@ app.get("/api/list", async (req, res) => {
 // --- Endpoint Statistik ---
 app.get("/api/stats", async (req, res) => {
   try {
-    const totalSiswas = await Siswa.countDocuments();
-    const totalKelases = await Kelas.countDocuments();
-    const totalGurus = await Guru.countDocuments();
+    const [siswasCount, kelasesCount, gurusCount] = await Promise.all([
+      pool.query("SELECT COUNT(*) FROM siswas"),
+      pool.query("SELECT COUNT(*) FROM kelases"),
+      pool.query("SELECT COUNT(*) FROM gurus"),
+    ]);
+
     const stats = {
-      totalSiswas,
-      totalKelases,
-      totalGurus,
+      totalSiswas: parseInt(siswasCount.rows[0].count),
+      totalKelases: parseInt(kelasesCount.rows[0].count),
+      totalGurus: parseInt(gurusCount.rows[0].count),
     };
     res.status(200).json(stats);
   } catch (error) {
