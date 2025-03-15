@@ -32,8 +32,18 @@ cd manage-school-app
 ```
 ## 2. Setup Backend
 Masuk ke folder backend dan instal dependensi:
-
-``bash
+```bash
 cd backend
 npm install
-````
+npm run dev
+```
+Backend akan berjalan di http://localhost:5000.
+
+## 3. Jalankan Frontend
+Masuk ke folder Frontend dan instal dependensi:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Buka browser di http://localhost:3000.
